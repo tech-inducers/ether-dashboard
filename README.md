@@ -54,7 +54,8 @@ ether/
 ├── node-red-auth-flows.json      ← Import this into Node-RED
 └── package.json
 
-
+## Prerequisite
+NodeRed installation - https://github.com/node-red/node-red
 ## Quick Start
 
 ### 1 Install \& run the Ether
