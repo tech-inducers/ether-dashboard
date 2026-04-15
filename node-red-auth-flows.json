@@ -1,0 +1,85 @@
+[
+  {
+    "id": "auth-local-in",
+    "type": "http in",
+    "name": "POST /auth/local",
+    "url": "/auth/local",
+    "method": "post",
+    "wires": [["auth-local-fn"]]
+  },
+  {
+    "id": "auth-local-fn",
+    "type": "function",
+    "name": "Validate Local Auth",
+    "func": "// Simple local auth — replace with your DB lookup\nconst { email, password } = msg.payload;\n\n// Demo: accept any valid email + password >= 6 chars\nif (!email || !password || password.length < 6) {\n    msg.statusCode = 401;\n    msg.payload = { message: 'Invalid credentials' };\n    return msg;\n}\n\n// Generate a simple JWT-like token (use jsonwebtoken in production)\nconst token = Buffer.from(JSON.stringify({\n    sub: email,\n    iat: Date.now(),\n    exp: Date.now() + 86400000\n})).toString('base64');\n\nconst user = {\n    id: 'local-' + Buffer.from(email).toString('base64').slice(0,8),\n    name: email.split('@')[0],\n    email: email,\n    provider: 'local',\n    avatar: 'https://ui-avatars.com/api/?name=' + encodeURIComponent(email.split('@')[0]) + '&background=00e5ff&color=060810&bold=true',\n    role: 'user',\n    loginAt: new Date().toISOString()\n};\n\nmsg.statusCode = 200;\nmsg.payload = { token, user };\nreturn msg;",
+    "wires": [["auth-response"]]
+  },
+  {
+    "id": "auth-register-in",
+    "type": "http in",
+    "name": "POST /auth/register",
+    "url": "/auth/register",
+    "method": "post",
+    "wires": [["auth-register-fn"]]
+  },
+  {
+    "id": "auth-register-fn",
+    "type": "function",
+    "name": "Register User",
+    "func": "const { name, email, password } = msg.payload;\n\nif (!name || !email || !password || password.length < 6) {\n    msg.statusCode = 400;\n    msg.payload = { message: 'Name, email and password (min 6 chars) required' };\n    return msg;\n}\n\nconst token = Buffer.from(JSON.stringify({\n    sub: email, iat: Date.now(), exp: Date.now() + 86400000\n})).toString('base64');\n\nconst user = {\n    id: 'local-' + Buffer.from(email).toString('base64').slice(0,8),\n    name, email,\n    provider: 'local',\n    avatar: 'https://ui-avatars.com/api/?name=' + encodeURIComponent(name) + '&background=ff6b35&color=fff&bold=true',\n    role: 'user',\n    loginAt: new Date().toISOString()\n};\n\nmsg.statusCode = 201;\nmsg.payload = { token, user };\nreturn msg;",
+    "wires": [["auth-response"]]
+  },
+  {
+    "id": "auth-response",
+    "type": "http response",
+    "name": "Auth Response",
+    "statusCode": "",
+    "headers": { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+    "wires": []
+  },
+  {
+    "id": "auth-google-in",
+    "type": "http in",
+    "name": "GET /auth/google",
+    "url": "/auth/google",
+    "method": "get",
+    "wires": [["auth-google-fn"]]
+  },
+  {
+    "id": "auth-google-fn",
+    "type": "function",
+    "name": "Google OAuth Redirect",
+    "func": "// Install: npm install passport passport-google-oauth20\n// Configure your Google Client ID in environment variables\nconst clientId = env.get('GOOGLE_CLIENT_ID') || 'YOUR_GOOGLE_CLIENT_ID';\nconst redirectUri = encodeURIComponent('http://localhost:1880/auth/google/callback');\nconst scope = encodeURIComponent('openid email profile');\n\nmsg.statusCode = 302;\nmsg.headers = {\n    Location: `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}`\n};\nmsg.payload = '';\nreturn msg;",
+    "wires": [["auth-response"]]
+  },
+  {
+    "id": "auth-facebook-in",
+    "type": "http in",
+    "name": "GET /auth/facebook",
+    "url": "/auth/facebook",
+    "method": "get",
+    "wires": [["auth-facebook-fn"]]
+  },
+  {
+    "id": "auth-facebook-fn",
+    "type": "function",
+    "name": "Facebook OAuth Redirect",
+    "func": "const appId = env.get('FACEBOOK_APP_ID') || 'YOUR_FACEBOOK_APP_ID';\nconst redirectUri = encodeURIComponent('http://localhost:1880/auth/facebook/callback');\nconst scope = encodeURIComponent('email,public_profile');\n\nmsg.statusCode = 302;\nmsg.headers = {\n    Location: `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=code`\n};\nmsg.payload = '';\nreturn msg;",
+    "wires": [["auth-response"]]
+  },
+  {
+    "id": "cors-options-in",
+    "type": "http in",
+    "name": "OPTIONS /*",
+    "url": "/auth/*",
+    "method": "options",
+    "wires": [["cors-fn"]]
+  },
+  {
+    "id": "cors-fn",
+    "type": "function",
+    "name": "CORS Headers",
+    "func": "msg.statusCode = 204;\nmsg.headers = {\n    'Access-Control-Allow-Origin': '*',\n    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',\n    'Access-Control-Allow-Headers': 'Content-Type,Authorization'\n};\nmsg.payload = '';\nreturn msg;",
+    "wires": [["auth-response"]]
+  }
+]

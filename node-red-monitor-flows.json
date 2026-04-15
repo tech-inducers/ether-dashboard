@@ -1,0 +1,97 @@
+[
+  {
+    "id": "nf-tab",
+    "type": "tab",
+    "label": "ether Bridge",
+    "disabled": false,
+    "info": "ether dashboard bridge. Provides real-time status via HTTP endpoint polling."
+  },
+
+  {
+    "id": "nf-init-inject",
+    "type": "inject",
+    "z": "nf-tab",
+    "name": "Init on deploy",
+    "once": true,
+    "onceDelay": "0.3",
+    "repeat": "",
+    "payload": "",
+    "payloadType": "str",
+    "x": 140, "y": 80,
+    "wires": [["nf-init-fn"]]
+  },
+
+  {
+    "id": "nf-init-fn",
+    "type": "function",
+    "z": "nf-tab",
+    "name": "Register nfPublish",
+    "func": "// nfPublish stores status in global context\n// Dashboard polls GET /nf/status to read it\nglobal.set('nfPublish', function(nodeId, nodeName, fill, text) {\n    var store = global.get('nfStore') || {};\n    store[nodeId] = { fill: fill, text: text, name: nodeName, ts: Date.now() };\n    global.set('nfStore', store);\n});\nglobal.set('nfStore', {});\nnode.status({ fill: 'green', shape: 'dot', text: 'ready' });\nreturn null;",
+    "outputs": 1,
+    "x": 360, "y": 80,
+    "wires": [[]]
+  },
+
+  {
+    "id": "nf-status-in",
+    "type": "http in",
+    "z": "nf-tab",
+    "name": "GET /nf/status",
+    "url": "/nf/status",
+    "method": "get",
+    "x": 160, "y": 180,
+    "wires": [["nf-status-fn"]]
+  },
+
+  {
+    "id": "nf-status-fn",
+    "type": "function",
+    "z": "nf-tab",
+    "name": "Return status store",
+    "func": "var store = global.get('nfStore') || {};\nmsg.payload = store;\nmsg.statusCode = 200;\nmsg.headers = {\n    'Content-Type': 'application/json',\n    'Access-Control-Allow-Origin': '*',\n    'Cache-Control': 'no-store'\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 380, "y": 180,
+    "wires": [["nf-status-out"]]
+  },
+
+  {
+    "id": "nf-status-out",
+    "type": "http response",
+    "z": "nf-tab",
+    "name": "",
+    "x": 580, "y": 180,
+    "wires": []
+  },
+
+  {
+    "id": "nf-status-options",
+    "type": "http in",
+    "z": "nf-tab",
+    "name": "OPTIONS /nf/status",
+    "url": "/nf/status",
+    "method": "options",
+    "x": 160, "y": 240,
+    "wires": [["nf-cors-fn"]]
+  },
+
+  {
+    "id": "nf-cors-fn",
+    "type": "function",
+    "z": "nf-tab",
+    "name": "CORS",
+    "func": "msg.statusCode = 204;\nmsg.headers = {\n    'Access-Control-Allow-Origin': '*',\n    'Access-Control-Allow-Methods': 'GET,OPTIONS',\n    'Access-Control-Allow-Headers': 'Content-Type'\n};\nmsg.payload = '';\nreturn msg;",
+    "outputs": 1,
+    "x": 360, "y": 240,
+    "wires": [["nf-status-out"]]
+  },
+
+  {
+    "id": "nf-comment",
+    "type": "comment",
+    "z": "nf-tab",
+    "name": "── Paste into EACH function node you want to monitor ──",
+    "info": "Add to the TOP of each function node:\n\n```javascript\nvar _pub = global.get('nfPublish');\nvar _t = Date.now();\n_pub && _pub(node.id, node.name, 'blue', 'processing');\n```\n\nAt the END (before return):\n```javascript\n_pub && _pub(node.id, node.name, 'green', 'done ' + (Date.now() - _t) + 'ms');\nreturn msg;\n```\n\nIn a catch block:\n```javascript\n_pub && _pub(node.id, node.name, 'red', e.message);\n```",
+    "x": 280, "y": 340,
+    "wires": []
+  }
+]
