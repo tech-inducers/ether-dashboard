@@ -1,4 +1,4 @@
-# Ether-Dashboard:A Real time monitoring for Node-Red
+# Ether-Dashboard:Real time monitoring for Node-Red
 
 
 
