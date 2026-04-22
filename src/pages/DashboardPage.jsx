@@ -286,8 +286,10 @@ function FlowCanvas({ nodes, onSelect, selected, activeEdges }) {
 
 /* ── Log row ────────────────────────────────────────────────── */
 function LogRow({ entry, selected, onClick }) {
-  const t = entry.ts;
-  const ts = `${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}:${String(t.getSeconds()).padStart(2,'0')}.${String(t.getMilliseconds()).padStart(3,'0')}`;
+  const t = entry.ts instanceof Date ? entry.ts : new Date(entry.ts);
+  const ts = !isNaN(t)
+    ? `${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}:${String(t.getSeconds()).padStart(2,'0')}.${String(t.getMilliseconds()).padStart(3,'0')}`
+    : '--:--:--.---';
   const col = levelCol[entry.level] || C.text;
   return (
     <div className="log-row" onClick={onClick}

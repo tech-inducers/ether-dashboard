@@ -86,6 +86,29 @@ function parseSIOFrames(raw) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ── Session persistence — survives page refresh ───────────────────────────
+const SS_KEY_STATUS = 'ether_node_status';   // { nodeId: {status,statusText,time,runs} }
+const SS_KEY_EDGES  = 'ether_active_edges';  // ["srcId->tgtId", ...]
+const SS_KEY_LOGS   = 'ether_logs';          // last N log entries
+const SS_MAX_AGE    = 24 * 60 * 60 * 1000;  // 24 hours
+
+function ssSave(key, value) {
+  try { sessionStorage.setItem(key, JSON.stringify({ ts: Date.now(), value })); } catch(_) {}
+}
+function ssLoad(key) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const { ts, value } = JSON.parse(raw);
+    if (Date.now() - ts > SS_MAX_AGE) { sessionStorage.removeItem(key); return null; }
+    return value;
+  } catch(_) { return null; }
+}
+function ssClear() {
+  [SS_KEY_STATUS, SS_KEY_EDGES, SS_KEY_LOGS].forEach(k => sessionStorage.removeItem(k));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 export function useNodeRed() {
   const [connected,   setConnected]   = useState(false);
   const [nrVersion,   setNrVersion]   = useState(null);
@@ -93,8 +116,14 @@ export function useNodeRed() {
   const [tabs,        setTabs]        = useState([]);
   const [activeTab,   setActiveTab]   = useState(null);
   const [nodes,       setNodes]       = useState([]);
-  const [activeEdges, setActiveEdges] = useState(new Set());
-  const [logs,        setLogs]        = useState([]);
+  const [activeEdges, setActiveEdges] = useState(() => {
+    const saved = ssLoad(SS_KEY_EDGES);
+    return saved ? new Set(saved) : new Set();
+  });
+  const [logs, setLogs] = useState(() => {
+    const saved = ssLoad(SS_KEY_LOGS);
+    return saved || [];
+  });
   const [stats,       setStats]       = useState({ messages:0, errors:0, warnings:0, avgMs:0, totalMs:0, count:0 });
   const [execTimes,   setExecTimes]   = useState([]);
   const [lastEvent,   setLastEvent]   = useState(null);
@@ -134,20 +163,39 @@ export function useNodeRed() {
   }, []);
 
   const updateNode = useCallback((id, patch) => {
-    setNodes(prev => prev.map(n => {
-      if (n.id!==id) return n;
-      const execHistory=patch.time!=null?[...(n.execHistory||[]),patch.time].slice(-20):n.execHistory;
-      const runs=(patch.status==='done'||patch.status==='error')?(n.runs||0)+1:n.runs;
-      return {...n,...patch,execHistory,runs};
-    }));
+    setNodes(prev => {
+      const next = prev.map(n => {
+        if (n.id!==id) return n;
+        const execHistory=patch.time!=null?[...(n.execHistory||[]),patch.time].slice(-20):n.execHistory;
+        const runs=(patch.status==='done'||patch.status==='error')?(n.runs||0)+1:n.runs;
+        return {...n,...patch,execHistory,runs};
+      });
+      // Persist status snapshot to sessionStorage
+      try {
+        const statusSnap = {};
+        next.forEach(n => {
+          if (n.status !== 'idle') statusSnap[n.id] = { status:n.status, statusText:n.statusText, time:n.time, runs:n.runs };
+        });
+        ssSave(SS_KEY_STATUS, statusSnap);
+      } catch(_) {}
+      return next;
+    });
   }, []);
 
   const activateEdge = useCallback((srcId, tgtId, ttl=1400) => {
     const key=`${srcId}->${tgtId}`;
     if (edgeTimers.current[key]) clearTimeout(edgeTimers.current[key]);
-    setActiveEdges(prev=>new Set([...prev,key]));
+    setActiveEdges(prev => {
+      const next = new Set([...prev, key]);
+      ssSave(SS_KEY_EDGES, [...next]);
+      return next;
+    });
     edgeTimers.current[key]=setTimeout(()=>{
-      setActiveEdges(prev=>{const s=new Set(prev);s.delete(key);return s;});
+      setActiveEdges(prev=>{
+        const s=new Set(prev); s.delete(key);
+        ssSave(SS_KEY_EDGES, [...s]);
+        return s;
+      });
       delete edgeTimers.current[key];
     }, ttl);
   }, []);
@@ -335,9 +383,12 @@ export function useNodeRed() {
 
     // ── flow deployed ───────────────────────────────────────────────────────
     if (event==='notification/deploy') {
-      addLog('info','Runtime',`Flow deployed [${String(data?.type||'full')}] — reloading`,null,null);
+      const dtype = String(data?.type||'full');
+      addLog('info','Runtime',`Flow deployed [${dtype}] — reloading`,null,null);
       setActiveEdges(new Set());
-      setTimeout(()=>fetchFlows(),1200);
+      // Force lastRevRef reset so fetchFlows always replaces nodes on deploy
+      lastRevRef.current = null;
+      setTimeout(()=>fetchFlows(),1000);
       return;
     }
 
@@ -392,23 +443,61 @@ export function useNodeRed() {
         headers:{'Node-RED-API-Version':'v2',Accept:'application/json'},
       });
       const raw=Array.isArray(res.data)?res.data:(res.data?.flows??[]);
-      const rev=res.headers?.etag||String(raw.length);
-      if (rev!==lastRevRef.current) {
-        if (lastRevRef.current!==null) { addLog('info','Runtime','Flow changed',null,null); setActiveEdges(new Set()); }
-        lastRevRef.current=rev;
+
+      // Build a reliable revision fingerprint from node IDs + names (not just count)
+      // This catches: node deleted, node added, node renamed — all correctly
+      const nodeFingerprint = raw
+        .filter(n=>n.id&&n.type&&n.type!=='tab')
+        .map(n=>`${n.id}:${n.type}:${n.name||''}`)
+        .sort()
+        .join('|');
+      const rev = res.headers?.etag || res.headers?.['x-red-api-version'] || nodeFingerprint;
+
+      const changed = lastRevRef.current !== null && rev !== lastRevRef.current;
+      if (rev !== lastRevRef.current) {
+        if (changed) {
+          addLog('info','Runtime','Flow changed — refreshing canvas',null,null);
+          setActiveEdges(new Set());
+        }
+        lastRevRef.current = rev;
       }
-      const newTabs=parseTabs(raw);
-      const newNodes=parseFlows(raw);
+
+      const newTabs  = parseTabs(raw);
+      const newNodes = parseFlows(raw);
+
+      // Build set of valid node IDs from Node-RED
+      const validIds = new Set(newNodes.map(n=>n.id));
+
       setTabs(newTabs);
-      setNodes(prev=>{
-        const pm={};prev.forEach(n=>{pm[n.id]=n;});
-        return newNodes.map(n=>{
-          const ex=pm[n.id];
-          return ex&&ex.status!=='idle'?{...n,status:ex.status,statusText:ex.statusText,time:ex.time,runs:ex.runs,execHistory:ex.execHistory,lastMsg:ex.lastMsg}:n;
+      // Replace nodes list with what Node-RED reports.
+      // Carry over live status for nodes that still exist —
+      // also restore from sessionStorage if this is a fresh page load.
+      const savedStatus = ssLoad(SS_KEY_STATUS) || {};
+      setNodes(prev => {
+        const prevMap = {};
+        prev.forEach(n => { prevMap[n.id] = n; });
+        return newNodes.map(n => {
+          // Priority: in-memory prev state > sessionStorage > idle
+          const ex  = prevMap[n.id];
+          const ss  = savedStatus[n.id];
+          if (ex && ex.status !== 'idle' && validIds.has(n.id)) {
+            return { ...n, status:ex.status, statusText:ex.statusText,
+              time:ex.time, runs:ex.runs, execHistory:ex.execHistory, lastMsg:ex.lastMsg };
+          }
+          if (ss && ss.status !== 'idle' && validIds.has(n.id)) {
+            return { ...n, status:ss.status, statusText:ss.statusText||'',
+              time:ss.time||null, runs:ss.runs||0 };
+          }
+          return n;
         });
       });
+
       if (newTabs.length>0) setActiveTab(t=>t||newTabs[0].id);
-      addLog('info','Dashboard',`Loaded ${newNodes.length} nodes across ${newTabs.length} tab(s)`,null,null);
+      if (changed) {
+        addLog('info','Dashboard',`Updated: ${newNodes.length} nodes across ${newTabs.length} tab(s)`,null,null);
+      } else {
+        addLog('info','Dashboard',`Loaded ${newNodes.length} nodes across ${newTabs.length} tab(s)`,null,null);
+      }
       return {ok:true};
     } catch(e) {
       addLog('warn','Dashboard',`Cannot reach Node-RED: ${e.response?`HTTP ${e.response.status}`:e.message}`,null,null);
@@ -502,10 +591,14 @@ export function useNodeRed() {
       try {
         const res=await axios.get(`${base}/flows`,{timeout:5000,headers:{'Node-RED-API-Version':'v2',Accept:'application/json'}});
         const raw=Array.isArray(res.data)?res.data:(res.data?.flows??[]);
-        const rev=res.headers?.etag||String(raw.length);
+        const fp = raw
+          .filter(n=>n.id&&n.type&&n.type!=='tab')
+          .map(n=>`${n.id}:${n.type}:${n.name||''}`)
+          .sort().join('|');
+        const rev = res.headers?.etag || fp;
         if (rev!==lastRevRef.current&&lastRevRef.current!==null) {
           lastRevRef.current=rev;
-          addLog('info','Runtime','Flow change detected',null,null);
+          addLog('info','Runtime','Flow change detected — refreshing',null,null);
           setActiveEdges(new Set());
           fetchFlows(base);
         }
@@ -537,6 +630,7 @@ export function useNodeRed() {
     setNrUrl(target); urlRef.current=target;
     retryRef.current=0; lastRevRef.current=null;
     setNodes([]); setTabs([]); setActiveTab(null); setActiveEdges(new Set()); setBridgeReady(false);
+    ssSave(SS_KEY_EDGES, []); // clear edges — will rebuild from live /comms events
     if (wsRef.current) try { wsRef.current.onclose=null; wsRef.current.close(); } catch(_){}
     if (pingRef.current) clearInterval(pingRef.current);
     if (flowPollRef.current) clearInterval(flowPollRef.current);
@@ -560,6 +654,11 @@ export function useNodeRed() {
     }
   }, [addLog, updateNode, activateEdge, scheduleIdle]);
 
+  // Persist logs to sessionStorage whenever they change
+  useEffect(()=>{
+    if (logs.length > 0) ssSave(SS_KEY_LOGS, logs.slice(0,100));
+  }, [logs]);
+
   useEffect(()=>{
     connect();
     return ()=>{
@@ -576,6 +675,7 @@ export function useNodeRed() {
     setNodes(prev=>prev.map(n=>({...n,status:'idle',statusText:'',time:null,runs:0,lastMsg:null,execHistory:[]})));
     setActiveEdges(new Set()); setLogs([]);
     setStats({messages:0,errors:0,warnings:0,avgMs:0,totalMs:0,count:0}); setExecTimes([]);
+    ssClear(); // wipe persisted state
   }, []);
 
   const visibleNodes = activeTab ? nodes.filter(n=>n.tabId===activeTab) : nodes;
