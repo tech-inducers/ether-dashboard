@@ -1,4 +1,4 @@
-# Ether —  Dashboard for Node-RED with  real-time monitoring and live status
+# Ether-Dashboard:Real time monitoring for Node-Red
 
 
 
@@ -54,7 +54,8 @@ ether/
 ├── node-red-auth-flows.json      ← Import this into Node-RED
 └── package.json
 
-
+## Prerequisite
+NodeRed installation - https://github.com/node-red/node-red
 ## Quick Start
 
 ### 1 Install \& run the Ether
